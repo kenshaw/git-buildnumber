@@ -30,6 +30,7 @@ $ go get -u github.com/brankas/git-buildnumber
 ## Usage
 
 ```text
+$ git-buildnumber --help
 Usage of git-buildnumber:
   -prefix string
     	prefix (default "v")
