@@ -13,7 +13,7 @@ case.
 The build number is formatted in a standard `W.X.Y.Z` format, such that:
 
 ```text
-W - The number of years since start offset by a start year (ie, 2014 would be '0') of a git commit
+W - The number of years since start the start of the git repository
 X - Month of year of a git commit
 Y - Day of the month of a git commit commit
 Z - The number (order) of the git commit of the day
@@ -30,6 +30,18 @@ $ go get -u github.com/brankas/git-buildnumber
 ## Usage
 
 ```text
+# change to git repository
+$ cd /path/to/git/repository
+
+# get buildnumber for a repository
+$ git-buildnumber
+v1.2.3.4
+
+# get buildnumber using a year offset
+$ git-buildnumber -year 2014
+v3.2.3.4
+
+# help
 $ git-buildnumber --help
 Usage of git-buildnumber:
   -prefix string
@@ -41,3 +53,7 @@ Usage of git-buildnumber:
   -year string
     	start year
 ```
+
+**Note**: if `-year` is not specified, then an attempt is made to retrieve the
+year of the first commit in the repository. If the year cannot be determined,
+then `0` will be used.
