@@ -15,9 +15,10 @@ import (
 
 var (
 	flagRev    = flag.String("rev", "HEAD", "git revision")
-	flagYear   = flag.String("year", "", "start year")
+	flagYear   = flag.String("year", "", "start year offset")
 	flagPrefix = flag.String("prefix", "v", "prefix")
 	flagSep    = flag.String("sep", ".", "field separator")
+	flagShort  = flag.Bool("short", false, "trim last \"<sep>0\" from version")
 )
 
 func init() {
@@ -56,6 +57,9 @@ func main() {
 	if verstr == "" {
 		verstr = strings.Join([]string{"0", "0", "0", "0"}, *flagSep)
 	}
+	if *flagShort {
+		verstr = strings.TrimSuffix(verstr, *flagSep+"0")
+	}
 
 	// determine line end
 	var extra string
@@ -90,6 +94,7 @@ func getVersion(wd string) []int {
 	if err != nil {
 		return nil
 	}
+
 	year = t.Year() - year
 	if year < 0 {
 		year = 0
@@ -103,9 +108,9 @@ func getVersion(wd string) []int {
 	)
 	var count int
 	if err == nil {
-		count = len(strings.Split(commits, "\n")) - 1
+		count = strings.Count(commits, "\n")
 	}
-	return []int{year, int(t.Month()), int(t.Day()), count}
+	return []int{year, int(t.Month()), t.Day(), count}
 }
 
 // getDefaultYear gets the year of the first commit.
