@@ -1,16 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	isatty "github.com/mattn/go-isatty"
+	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 var (
@@ -47,7 +48,11 @@ func main() {
 
 	// format version
 	var verstr string
-	vers := getVersion(wd)
+	vers, err := getVersion(wd)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	for i := 0; i < len(vers); i++ {
 		if i != 0 {
 			verstr += *flagSep
@@ -72,27 +77,34 @@ func main() {
 }
 
 // getVersion determines the version.
-func getVersion(wd string) []int {
+func getVersion(wd string) ([]int, error) {
+	repo, err := git.PlainOpen(wd)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := repo.ResolveRevision(plumbing.Revision(*flagRev))
+	if err != nil {
+		return nil, err
+	}
+
 	// get time of commit
-	at, err := git(wd, params("show", "-s", "--format=%at")...)
+	commit, err := repo.CommitObject(*hash)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	z, err := strconv.ParseInt(at, 10, 64)
-	if err != nil {
-		return nil
-	}
-	t := time.Unix(z, 0)
+	t := commit.Author.When.UTC()
 
+	var year int
 	// set default year based on initial commit
-	if *flagYear == "" {
-		*flagYear = strconv.Itoa(getDefaultYear(wd))
-	}
-
-	// process year
-	year, err := strconv.Atoi(*flagYear)
-	if err != nil {
-		return nil
+	if *flagYear != "" {
+		// process year
+		if year, err = strconv.Atoi(*flagYear); err != nil {
+			return nil, err
+		}
+	} else {
+		if year, err = getDefaultYear(commit); err != nil {
+			return nil, err
+		}
 	}
 
 	year = t.Year() - year
@@ -100,52 +112,57 @@ func getVersion(wd string) []int {
 		year = 0
 	}
 
-	// determine count (order)
-	commits, err := git(
-		wd, "log", "-s", "--format=%h",
-		"--since="+t.Format("2006-01-02 00:00:00 +0000"),
-		"--until="+t.Format("2006-01-02 15:04:05 +0000"),
-	)
-	var count int
-	if err == nil {
-		count = strings.Count(commits, "\n")
+	// determine count (order) from the start of the day at UTC
+	dayStart := commit.Committer.When.UTC().Truncate(24 * time.Hour)
+	count, err := countCommits(dayStart, commit)
+	if err != nil {
+		return nil, err
 	}
-	return []int{year, int(t.Month()), t.Day(), count}
+	count-- // 0-based
+	return []int{year, int(t.Month()), t.Day(), count}, nil
 }
 
 // getDefaultYear gets the year of the first commit.
-func getDefaultYear(dir string) int {
-	// get first revision
-	firstRev, err := git(dir, "rev-list", "--max-parents=0", "HEAD")
-	if err != nil {
-		return time.Now().Year()
-	}
-	firstTimestamp, err := git(dir, "show", "-s", "--format=%at", firstRev)
-	if err != nil {
-		return time.Now().Year()
-	}
-	firstT, err := strconv.ParseInt(firstTimestamp, 10, 64)
-	if err != nil {
-		return time.Now().Year()
-	}
-	return time.Unix(firstT, 0).Year()
+func getDefaultYear(commit *object.Commit) (int, error) {
+	// The order doesn't matter, so do pre-order.
+	iter := object.NewCommitPreorderIter(commit, nil, nil)
+	defer iter.Close()
+	oldestTime := time.Time{}
+	err := iter.ForEach(func(commit *object.Commit) error {
+		if len(commit.ParentHashes) > 0 {
+			// not a root commit
+			return nil
+		}
+		t := commit.Author.When
+		if oldestTime == (time.Time{}) || t.Before(oldestTime) {
+			oldestTime = t
+		}
+		return nil
+	})
+	return oldestTime.UTC().Year(), err
 }
 
-// params conditionally appends flagRev to v.
-func params(v ...string) []string {
-	if *flagRev != "" {
-		return append(v, *flagRev)
-	}
-	return v
-}
+var stopIter = fmt.Errorf("stopped commit iter")
 
-// git runs git with the passed parameters, and returns the output.
-func git(dir string, params ...string) (string, error) {
-	cmd := exec.Command("git", params...)
-	cmd.Dir = dir
-	buf, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", err
+// countCommits counts the number of commits from a certain time until a
+// certain commit.
+func countCommits(from time.Time, until *object.Commit) (int, error) {
+	// We want to visit the commit history like "git log", so do
+	// post-order to see merged commits right after their merge
+	// commit.
+	iter := object.NewCommitPostorderIter(until, nil)
+	defer iter.Close()
+	count := 0
+	err := iter.ForEach(func(commit *object.Commit) error {
+		if commit.Committer.When.Before(from) {
+			// Past the date; stop iterating.
+			return stopIter
+		}
+		count++
+		return nil
+	})
+	if err == stopIter {
+		err = nil
 	}
-	return string(bytes.TrimSpace(buf)), nil
+	return count, err
 }
