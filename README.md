@@ -63,14 +63,18 @@ v15.2.3
 # short form and 0 as year offset
 $ git-buildnumber -short -year 0
 v2015.2.3
+
+# inverse
+$ git-buildnumber -inverse v1.2.3.0
+a3efd74543d3402b62184081ed93bfdf2c65421d
 ```
 
-### Command line parameters
+### Command-line parameters
 
 ```sh
-$ git-buildnumber --help
-# general help
 Usage of git-buildnumber:
+  -inverse string
+    	string to inverse
   -prefix string
     	prefix (default "v")
   -rev string
