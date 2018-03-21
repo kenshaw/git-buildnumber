@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,55 +17,36 @@ import (
 )
 
 var (
-	flagRev    = flag.String("rev", "HEAD", "git revision")
-	flagYear   = flag.String("year", "", "start year offset")
-	flagPrefix = flag.String("prefix", "v", "prefix")
-	flagSep    = flag.String("sep", ".", "field separator")
-	flagShort  = flag.Bool("short", false, "trim last \"<sep>0\" from version")
+	flagRev     = flag.String("rev", "HEAD", "git revision")
+	flagYear    = flag.String("year", "", "start year offset")
+	flagPrefix  = flag.String("prefix", "v", "prefix")
+	flagSep     = flag.String("sep", ".", "field separator")
+	flagShort   = flag.Bool("short", false, "trim last \"<sep>0\" from version")
+	flagInverse = flag.String("inverse", "", "string to inverse")
 )
 
-func init() {
-	time.Local = time.UTC
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-func main() {
-	var err error
-
+func run() error {
 	flag.Parse()
 
+	var err error
 	var wd string
 	switch {
 	case flag.NArg() == 0:
 		wd, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 	case flag.NArg() == 1:
 		wd = os.Args[len(os.Args)-1]
 	case flag.NArg() > 1:
-		fmt.Fprintln(os.Stderr, "error: cannot specify more than one git directory")
-		os.Exit(1)
-	}
-
-	// format version
-	var verstr string
-	vers, err := getVersion(wd)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	for i := 0; i < len(vers); i++ {
-		if i != 0 {
-			verstr += *flagSep
-		}
-		verstr += strconv.Itoa(vers[i])
-	}
-	if verstr == "" {
-		verstr = strings.Join([]string{"0", "0", "0", "0"}, *flagSep)
-	}
-	if *flagShort {
-		verstr = strings.TrimSuffix(verstr, *flagSep+"0")
+		return errors.New("cannot specify more than one git directory")
 	}
 
 	// determine line end
@@ -72,97 +55,224 @@ func main() {
 		extra = "\n"
 	}
 
-	// output
-	fmt.Fprintf(os.Stdout, "%s%s%s", *flagPrefix, verstr, extra)
+	if *flagInverse == "" {
+		var vers []string
+		if vers, err = getVersion(wd); err != nil {
+			return err
+		}
+		if n := len(vers) - 1; *flagShort && vers[n] == "0" {
+			vers = vers[:n]
+		}
+		fmt.Fprint(os.Stdout, *flagPrefix, strings.Join(vers, *flagSep), extra)
+	} else {
+		var hash string
+		if hash, err = getInverse(wd); err != nil {
+			return err
+		}
+		fmt.Fprint(os.Stdout, hash, extra)
+	}
+
+	return nil
 }
 
 // getVersion determines the version.
-func getVersion(wd string) ([]int, error) {
+func getVersion(wd string) ([]string, error) {
+	var err error
+
+	// open repository
 	repo, err := git.PlainOpen(wd)
 	if err != nil {
 		return nil, err
 	}
-	hash, err := repo.ResolveRevision(plumbing.Revision(*flagRev))
-	if err != nil {
-		return nil, err
-	}
 
-	// get time of commit
-	commit, err := repo.CommitObject(*hash)
-	if err != nil {
-		return nil, err
-	}
-	t := commit.Author.When.UTC()
-
-	var year int
-	// set default year based on initial commit
-	if *flagYear != "" {
-		// process year
-		if year, err = strconv.Atoi(*flagYear); err != nil {
-			return nil, err
+	// find commit
+	var hash *plumbing.Hash
+	var commit *object.Commit
+	if hash, err = repo.ResolveRevision(plumbing.Revision(*flagRev)); err != nil {
+		// could not resolve rev, so search for associated object
+		if h := plumbing.NewHash(*flagRev); h != plumbing.ZeroHash {
+			var obj object.Object
+			if obj, err = repo.Object(plumbing.AnyObject, h); err != nil {
+				return nil, errors.New("invalid ref")
+			}
+			var ok bool
+			if commit, ok = obj.(*object.Commit); !ok {
+				return nil, errors.New("ref is not a commit ref")
+			}
 		}
 	} else {
-		if year, err = getDefaultYear(commit); err != nil {
+		// rev flag was blank or was valid gitrev
+		commit, err = repo.CommitObject(*hash)
+		if err != nil {
 			return nil, err
 		}
 	}
 
-	year = t.Year() - year
+	// empty repository
+	if commit == nil {
+		return []string{"0", "0", "0", "0"}, nil
+	}
+
+	// determine year offset
+	year, err := determineYearOffset(commit)
+	if err != nil {
+		return nil, err
+	}
+
+	// clamp date to UTC and year to 0
+	date := commit.Committer.When.UTC()
+	year = date.Year() - year
 	if year < 0 {
 		year = 0
 	}
 
-	// determine count (order) from the start of the day at UTC
-	dayStart := commit.Committer.When.UTC().Truncate(24 * time.Hour)
-	count, err := countCommits(dayStart, commit)
+	// determine order
+	order, err := commitOrder(commit, date.Truncate(24*time.Hour))
 	if err != nil {
 		return nil, err
 	}
-	count-- // 0-based
-	return []int{year, int(t.Month()), t.Day(), count}, nil
+
+	return []string{
+		strconv.Itoa(year),
+		strconv.Itoa(int(date.Month())),
+		strconv.Itoa(date.Day()),
+		strconv.Itoa(order),
+	}, nil
 }
 
-// getDefaultYear gets the year of the first commit.
-func getDefaultYear(commit *object.Commit) (int, error) {
-	// The order doesn't matter, so do pre-order.
-	iter := object.NewCommitPreorderIter(commit, nil, nil)
-	defer iter.Close()
-	oldestTime := time.Time{}
-	err := iter.ForEach(func(commit *object.Commit) error {
-		if len(commit.ParentHashes) > 0 {
-			// not a root commit
-			return nil
-		}
-		t := commit.Author.When
-		if oldestTime == (time.Time{}) || t.Before(oldestTime) {
-			oldestTime = t
-		}
-		return nil
-	})
-	return oldestTime.UTC().Year(), err
-}
+// getInverse determines the hash based on the supplied flags.
+func getInverse(wd string) (string, error) {
+	var err error
 
-var stopIter = fmt.Errorf("stopped commit iter")
-
-// countCommits counts the number of commits from a certain time until a
-// certain commit.
-func countCommits(from time.Time, until *object.Commit) (int, error) {
-	// We want to visit the commit history like "git log", so do
-	// post-order to see merged commits right after their merge
-	// commit.
-	iter := object.NewCommitPostorderIter(until, nil)
-	defer iter.Close()
-	count := 0
-	err := iter.ForEach(func(commit *object.Commit) error {
-		if commit.Committer.When.Before(from) {
-			// Past the date; stop iterating.
-			return stopIter
-		}
-		count++
-		return nil
-	})
-	if err == stopIter {
-		err = nil
+	// open repository
+	repo, err := git.PlainOpen(wd)
+	if err != nil {
+		return "", err
 	}
-	return count, err
+
+	// get head
+	head, err := repo.Head()
+	if err != nil {
+		return "", err
+	}
+
+	// get commit
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return "", err
+	}
+
+	// parse inverse string
+	year, month, day, order, err := parseInverse(commit)
+	if err != nil {
+		return "", err
+	}
+
+	iter := object.NewCommitPostorderIter(commit, nil)
+	defer iter.Close()
+
+	// find closest matching commit
+	var c *object.Commit
+	for c, err = iter.Next(); err == nil; c, err = iter.Next() {
+		d := c.Committer.When.UTC()
+		var n int
+		n, err = commitOrder(c, d.Truncate(24*time.Hour))
+		if err != nil {
+			return "", err
+		}
+		if d.Year() == year && d.Month() == month && d.Day() == day && order == n {
+			return c.Hash.String(), nil
+		}
+	}
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+
+	return "", errors.New("could not find matching version")
+}
+
+// parseInverse parses the inverse flag.
+func parseInverse(commit *object.Commit) (int, time.Month, int, int, error) {
+	var err error
+	vers := strings.Split(strings.TrimPrefix(*flagInverse, *flagPrefix), *flagSep)
+	if len(vers) == 3 {
+		vers = append(vers, "0")
+	}
+	ver := make([]int, 4)
+	for i := range vers {
+		ver[i], err = strconv.Atoi(vers[i])
+		if err != nil {
+			return 0, 0, 0, 0, errors.New("invalid inverse version")
+		}
+	}
+
+	// determine year offset
+	var year int
+	year, err = determineYearOffset(commit)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return ver[0] + year, time.Month(ver[1]), ver[2], ver[3], nil
+}
+
+// determineYearOffset determines the offset for the given commit.
+func determineYearOffset(commit *object.Commit) (int, error) {
+	var err error
+	var year int
+	if *flagYear != "" {
+		if year, err = strconv.Atoi(*flagYear); err != nil {
+			return 0, err
+		}
+	} else {
+		var oldest *object.Commit
+		if oldest, err = oldestParent(commit); err != nil {
+			return 0, err
+		}
+		year = oldest.Committer.When.UTC().Year()
+	}
+	return year, nil
+}
+
+// oldestParent retrieves the oldest parent of commit.
+func oldestParent(commit *object.Commit) (*object.Commit, error) {
+	iter := object.NewCommitPostorderIter(commit, nil)
+	defer iter.Close()
+
+	oldest, date := commit, commit.Committer.When.UTC()
+	var c *object.Commit
+	var err error
+	for c, err = iter.Next(); err == nil; c, err = iter.Next() {
+		if len(c.ParentHashes) > 0 {
+			continue
+		}
+		if d := c.Committer.When.UTC(); d.Before(date) {
+			oldest, date = c, d
+		}
+	}
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return oldest, nil
+}
+
+// commitOrder determines the order (ie, number) of commits made before the
+// commit on the same date (based on UTC time).
+//
+// Note: zero ordered.
+func commitOrder(commit *object.Commit, date time.Time) (int, error) {
+	iter := object.NewCommitPostorderIter(commit, nil)
+	defer iter.Close()
+
+	var count int
+	var c *object.Commit
+	var err error
+	for c, err = iter.Next(); err == nil; c, err = iter.Next() {
+		if d := c.Committer.When.UTC(); d.Equal(date) || d.After(date) {
+			count++
+		}
+	}
+	if err != nil && err != io.EOF {
+		return -1, err
+	}
+	return count - 1, nil
 }
