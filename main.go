@@ -55,9 +55,16 @@ func run() error {
 		extra = "\n"
 	}
 
+
+	openOpt := &git.PlainOpenOptions{DetectDotGit: true}
+	repo, err := git.PlainOpenWithOptions(wd, openOpt)
+	if err != nil {
+		return err
+	}
+
 	if *flagInverse == "" {
 		var vers []string
-		if vers, err = getVersion(wd); err != nil {
+		if vers, err = getVersion(repo); err != nil {
 			return err
 		}
 		if n := len(vers) - 1; *flagShort && vers[n] == "0" {
@@ -66,7 +73,7 @@ func run() error {
 		fmt.Fprint(os.Stdout, *flagPrefix, strings.Join(vers, *flagSep), extra)
 	} else {
 		var hash string
-		if hash, err = getInverse(wd); err != nil {
+		if hash, err = getInverse(repo); err != nil {
 			return err
 		}
 		fmt.Fprint(os.Stdout, hash, extra)
@@ -76,19 +83,12 @@ func run() error {
 }
 
 // getVersion determines the version.
-func getVersion(wd string) ([]string, error) {
-	var err error
-
-	// open repository
-	repo, err := git.PlainOpen(wd)
-	if err != nil {
-		return nil, err
-	}
+func getVersion(repo *git.Repository) ([]string, error) {
 
 	// find commit
-	var hash *plumbing.Hash
 	var commit *object.Commit
-	if hash, err = repo.ResolveRevision(plumbing.Revision(*flagRev)); err != nil {
+	hash, err := repo.ResolveRevision(plumbing.Revision(*flagRev))
+	if err != nil {
 		// could not resolve rev, so search for associated object
 		if h := plumbing.NewHash(*flagRev); h != plumbing.ZeroHash {
 			var obj object.Object
@@ -141,15 +141,7 @@ func getVersion(wd string) ([]string, error) {
 }
 
 // getInverse determines the hash based on the supplied flags.
-func getInverse(wd string) (string, error) {
-	var err error
-
-	// open repository
-	repo, err := git.PlainOpen(wd)
-	if err != nil {
-		return "", err
-	}
-
+func getInverse(repo *git.Repository) (string, error) {
 	// get head
 	head, err := repo.Head()
 	if err != nil {
