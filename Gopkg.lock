@@ -173,8 +173,8 @@
     "utils/merkletrie/internal/frame",
     "utils/merkletrie/noder"
   ]
-  revision = "1d28459504251497e0ce6132a0fadd5eb44ffd22"
-  version = "v4.2.0"
+  revision = "0db54e829f81a28f71c22d54c03daba5ec144c8d"
+  version = "v4.3.0"
 
 [[projects]]
   name = "gopkg.in/warnings.v0"
