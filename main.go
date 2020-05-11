@@ -55,7 +55,6 @@ func run() error {
 		extra = "\n"
 	}
 
-
 	openOpt := &git.PlainOpenOptions{DetectDotGit: true}
 	repo, err := git.PlainOpenWithOptions(wd, openOpt)
 	if err != nil {
@@ -84,7 +83,6 @@ func run() error {
 
 // getVersion determines the version.
 func getVersion(repo *git.Repository) ([]string, error) {
-
 	// find commit
 	var commit *object.Commit
 	hash, err := repo.ResolveRevision(plumbing.Revision(*flagRev))
@@ -252,7 +250,7 @@ func oldestParent(commit *object.Commit) (*object.Commit, error) {
 //
 // Note: zero ordered.
 func commitOrder(commit *object.Commit, date time.Time) (int, error) {
-	iter := object.NewCommitPostorderIter(commit, nil)
+	iter := object.NewCommitIterCTime(commit, nil, nil)
 	defer iter.Close()
 
 	var count int
@@ -261,6 +259,11 @@ func commitOrder(commit *object.Commit, date time.Time) (int, error) {
 	for c, err = iter.Next(); err == nil; c, err = iter.Next() {
 		if d := c.Committer.When.UTC(); d.Equal(date) || d.After(date) {
 			count++
+		} else {
+			// Since we're iterating backwads by decreasing commit
+			// time (like git log), stop when done. This allows us
+			// to better support shallow clones.
+			break
 		}
 	}
 	if err != nil && err != io.EOF {
