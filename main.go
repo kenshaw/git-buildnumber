@@ -108,10 +108,7 @@ func getVersion(repo *git.Repository, year, rev string) ([]string, error) {
 	}
 	// clamp date to UTC and year to 0
 	date := commit.Committer.When.UTC()
-	offset = date.Year() - offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset = max(date.Year()-offset, 0)
 	// determine order
 	order, err := commitOrder(commit, date.Truncate(24*time.Hour))
 	if err != nil {
